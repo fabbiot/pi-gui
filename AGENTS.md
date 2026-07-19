@@ -28,3 +28,4 @@ These rules apply for the full session.
 ## Source Of Truth
 - Root `AGENTS.md` is the repo instruction source of truth.
 - Root `CLAUDE.md` should remain a symlink to `AGENTS.md`.
+- Cloud-agent smoke marker: leave this line so diffs/review can be checked end-to-end.
