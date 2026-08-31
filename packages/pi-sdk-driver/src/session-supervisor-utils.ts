@@ -3,6 +3,7 @@ import type { SessionInfo } from "@earendil-works/pi-coding-agent";
 import type {
   SessionAttachment,
   SessionConfig,
+  SessionContextUsage,
   SessionErrorInfo,
   SessionRef,
   SessionSnapshot,
@@ -25,10 +26,14 @@ export interface SnapshotSource {
   readonly preview: string | undefined;
   readonly config: SessionConfig | undefined;
   readonly runningRunId: string | undefined;
+  readonly session: {
+    getContextUsage(): SessionContextUsage | undefined;
+  } | undefined;
   readonly queuedMessages: readonly SessionQueuedMessage[];
 }
 
 export function buildSnapshot(source: SnapshotSource): SessionSnapshot {
+  const contextUsage = source.session?.getContextUsage();
   return {
     ref: { ...source.ref },
     workspace: { ...source.workspace },
@@ -38,6 +43,7 @@ export function buildSnapshot(source: SnapshotSource): SessionSnapshot {
     ...(source.archivedAt !== undefined ? { archivedAt: source.archivedAt } : {}),
     ...(source.preview !== undefined ? { preview: source.preview } : {}),
     ...(source.config ? { config: source.config } : {}),
+    ...(contextUsage ? { contextUsage: { ...contextUsage } } : {}),
     ...(source.runningRunId !== undefined ? { runningRunId: source.runningRunId } : {}),
     ...(source.queuedMessages.length > 0
       ? {

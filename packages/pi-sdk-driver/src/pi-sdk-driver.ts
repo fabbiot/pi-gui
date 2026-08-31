@@ -1,4 +1,4 @@
-import type { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { SessionCatalogSnapshot, WorkspaceCatalogSnapshot, WorkspaceId } from "@pi-gui/catalogs";
 import type {
   NavigateSessionTreeOptions,
@@ -34,8 +34,7 @@ export interface PiSdkDriverConfig extends PiSdkDriverOptions, RuntimeSupervisor
 export class PiSdkDriver implements SessionDriver {
   private readonly supervisor: SessionSupervisor;
   private readonly agentDir: string;
-  private readonly authStorage: AuthStorage;
-  private readonly modelRegistry: ModelRegistry;
+  private readonly modelRuntime: Promise<ModelRuntime>;
   private readonly generateThreadTitleOverride:
     | ((workspace: WorkspaceRef, options: GenerateThreadTitleOptions) => Promise<string | null | undefined>)
     | undefined;
@@ -44,11 +43,10 @@ export class PiSdkDriver implements SessionDriver {
   constructor(options: PiSdkDriverConfig = {}) {
     const deps = createRuntimeDependencies(options);
     this.agentDir = deps.agentDir;
-    this.authStorage = deps.authStorage;
-    this.modelRegistry = deps.modelRegistry;
+    this.modelRuntime = deps.modelRuntime;
     this.generateThreadTitleOverride = options.generateThreadTitleOverride;
 
-    this.supervisor = new SessionSupervisor({ ...options, modelRegistry: deps.modelRegistry });
+    this.supervisor = new SessionSupervisor({ ...options, modelRuntime: deps.modelRuntime });
     this.runtimeSupervisor = new RuntimeSupervisor({ ...options, ...deps });
   }
 
@@ -172,22 +170,16 @@ export class PiSdkDriver implements SessionDriver {
     return this.supervisor.getSessionSchemaInfo(sessionRef);
   }
 
-  generateThreadTitle(workspace: WorkspaceRef, options: GenerateThreadTitleOptions): Promise<string | null> {
+  async generateThreadTitle(workspace: WorkspaceRef, options: GenerateThreadTitleOptions): Promise<string | null> {
     if (this.generateThreadTitleOverride) {
-      return Promise.resolve(this.generateThreadTitleOverride(workspace, options)).then((override) =>
-        override !== undefined
-          ? override
-          : generateThreadTitle(workspace, options, {
-              agentDir: this.agentDir,
-              authStorage: this.authStorage,
-              modelRegistry: this.modelRegistry,
-            }),
-      );
+      const override = await this.generateThreadTitleOverride(workspace, options);
+      if (override !== undefined) {
+        return override;
+      }
     }
     return generateThreadTitle(workspace, options, {
       agentDir: this.agentDir,
-      authStorage: this.authStorage,
-      modelRegistry: this.modelRegistry,
+      modelRuntime: await this.modelRuntime,
     });
   }
 }

@@ -4,6 +4,7 @@ import {
   DefaultPackageManager,
   DefaultResourceLoader,
   type PackageSource,
+  type ModelRuntime,
   SettingsManager,
   parseFrontmatter,
   stripFrontmatter,
@@ -28,7 +29,6 @@ import type { WorkspaceRef } from "@pi-gui/session-driver";
 import { createRuntimeDependencies } from "./runtime-deps.js";
 import { createSettingsManagerWithoutNpmPackages, isGlobalNpmLookupError } from "./npm-package-fallback.js";
 import { skillSlashCommand } from "./runtime-command-utils.js";
-import type { AuthStatus, AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import {
   BUILT_IN_PROVIDER_IDS,
   CustomProviderStore,
@@ -70,8 +70,7 @@ interface ProjectWritableSettingsManager {
 
 export interface RuntimeSupervisorOptions {
   readonly agentDir?: string;
-  readonly authStorage?: AuthStorage;
-  readonly modelRegistry?: ModelRegistry;
+  readonly modelRuntime?: ModelRuntime | Promise<ModelRuntime>;
   readonly extensionFactories?: readonly ExtensionFactory[];
   readonly inlineExtensionMetadata?: readonly RuntimeInlineExtensionMetadata[];
   readonly customProviderStore?: CustomProviderStore;
@@ -87,8 +86,7 @@ interface PackageMetadata {
 
 export class RuntimeSupervisor implements RuntimeResourceDriver {
   private readonly agentDir: string;
-  private readonly authStorage: AuthStorage;
-  private readonly modelRegistry: ModelRegistry;
+  private readonly modelRuntime: Promise<ModelRuntime>;
   private readonly extensionFactories: readonly ExtensionFactory[];
   private readonly inlineExtensionMetadata: readonly RuntimeInlineExtensionMetadata[];
   private readonly customProviderStore: CustomProviderStore;
@@ -97,8 +95,7 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
   constructor(options: RuntimeSupervisorOptions = {}) {
     const deps = createRuntimeDependencies(options);
     this.agentDir = deps.agentDir;
-    this.authStorage = deps.authStorage;
-    this.modelRegistry = deps.modelRegistry;
+    this.modelRuntime = deps.modelRuntime;
     this.extensionFactories = options.extensionFactories ?? [];
     this.inlineExtensionMetadata = options.inlineExtensionMetadata ?? [];
     this.customProviderStore = deps.customProviderStore;
@@ -111,9 +108,9 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
 
   async refreshRuntime(workspace: WorkspaceRef): Promise<RuntimeSnapshot> {
     const context = await this.ensureContext(workspace);
+    const modelRuntime = await this.modelRuntime;
     context.settingsManager.reload();
-    this.authStorage.reload();
-    this.modelRegistry.refresh();
+    await modelRuntime.refresh();
     await context.resourceLoader.reload();
     await this.autoEnableModelsForAuthenticatedProviders(context);
     return this.buildSnapshot(context);
@@ -121,8 +118,14 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
 
   async login(workspace: WorkspaceRef, providerId: string, callbacks: RuntimeLoginCallbacks): Promise<RuntimeSnapshot> {
     const context = await this.ensureContext(workspace);
-    await this.authStorage.login(providerId, toPiOAuthLoginCallbacks(callbacks));
-    this.modelRegistry.refresh();
+    const modelRuntime = await this.modelRuntime;
+    const provider = modelRuntime.getProvider(providerId);
+    const authType = provider?.auth.oauth ? "oauth" : provider?.auth.apiKey?.login ? "api_key" : undefined;
+    if (!authType) {
+      throw new Error(`Interactive login is not supported for ${providerId}.`);
+    }
+    await modelRuntime.login(providerId, authType, toPiAuthInteraction(callbacks));
+    await modelRuntime.refresh();
     await context.resourceLoader.reload();
     await this.autoEnableModelsForAuthenticatedProviders(context, [providerId]);
     return this.buildSnapshot(context);
@@ -130,8 +133,9 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
 
   async logout(workspace: WorkspaceRef, providerId: string): Promise<RuntimeSnapshot> {
     const context = await this.ensureContext(workspace);
-    this.authStorage.logout(providerId);
-    this.modelRegistry.refresh();
+    const modelRuntime = await this.modelRuntime;
+    await modelRuntime.logout(providerId);
+    await modelRuntime.refresh();
     await context.resourceLoader.reload();
     return this.buildSnapshot(context);
   }
@@ -145,8 +149,9 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
     if (!providerSupportsDesktopApiKeySetup(providerId)) {
       throw new Error(`API key setup is not supported for ${providerId}.`);
     }
-    this.authStorage.set(providerId, { type: "api_key", key: normalized });
-    this.modelRegistry.refresh();
+    const modelRuntime = await this.modelRuntime;
+    await modelRuntime.setRuntimeApiKey(providerId, normalized);
+    await modelRuntime.refresh();
     await context.resourceLoader.reload();
     await this.autoEnableModelsForAuthenticatedProviders(context, [providerId]);
     return this.buildSnapshot(context);
@@ -157,7 +162,10 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
   }
 
   async setCustomProvider(workspace: WorkspaceRef, input: CustomProviderInput): Promise<RuntimeSnapshot> {
-    const oauthProviderIds = new Set(this.authStorage.getOAuthProviders().map((provider) => provider.id));
+    const modelRuntime = await this.modelRuntime;
+    const oauthProviderIds = new Set(
+      modelRuntime.getProviders().filter((provider) => provider.auth.oauth).map((provider) => provider.id),
+    );
     if (BUILT_IN_PROVIDER_IDS.has(input.providerId) || oauthProviderIds.has(input.providerId)) {
       throw new Error(
         `Provider ID "${input.providerId}" conflicts with a built-in provider. Pick a unique ID.`,
@@ -165,7 +173,7 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
     }
     const context = await this.ensureContext(workspace);
     await this.customProviderStore.set(input);
-    this.modelRegistry.refresh();
+    await modelRuntime.refresh();
     await context.resourceLoader.reload();
     await this.autoEnableModelsForAuthenticatedProviders(context, [input.providerId]);
     return this.buildSnapshot(context);
@@ -173,8 +181,9 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
 
   async deleteCustomProvider(workspace: WorkspaceRef, providerId: string): Promise<RuntimeSnapshot> {
     const context = await this.ensureContext(workspace);
+    const modelRuntime = await this.modelRuntime;
     await this.customProviderStore.delete(providerId);
-    this.modelRegistry.refresh();
+    await modelRuntime.refresh();
     await context.resourceLoader.reload();
     return this.buildSnapshot(context);
   }
@@ -466,42 +475,53 @@ export class RuntimeSupervisor implements RuntimeResourceDriver {
   }
 
   private async buildProviderRecords(): Promise<readonly RuntimeProviderRecord[]> {
-    const oauthProviders = new Map(this.authStorage.getOAuthProviders().map((provider) => [provider.id, provider]));
+    const modelRuntime = await this.modelRuntime;
+    const providers = new Map(modelRuntime.getProviders().map((provider) => [provider.id, provider]));
+    const credentials = new Map(
+      (await modelRuntime.listCredentials()).map((credential) => [credential.providerId, credential]),
+    );
     const providerIds = new Set<string>([
-      ...this.modelRegistry.getAll().map((model) => model.provider),
-      ...oauthProviders.keys(),
-      ...this.authStorage.list(),
+      ...modelRuntime.getModels().map((model) => model.provider),
+      ...providers.keys(),
+      ...credentials.keys(),
     ]);
 
     return [...providerIds]
       .sort((left, right) => left.localeCompare(right))
       .map((providerId) => {
-        const auth = this.authStorage.get(providerId);
-        const oauthProvider = oauthProviders.get(providerId);
+        const credential = credentials.get(providerId);
+        const provider = providers.get(providerId);
         const apiKeySetupSupported = providerSupportsDesktopApiKeySetup(providerId);
-        const providerAuthStatus = this.modelRegistry.getProviderAuthStatus(providerId);
-        const hasAuth = providerAuthStatus.configured || this.authStorage.hasAuth(providerId);
+        const providerAuthStatus = modelRuntime.getProviderAuthStatus(providerId);
+        const authType = credential?.type ?? (
+          providerAuthStatus.configured
+            ? provider?.auth.oauth && !provider.auth.apiKey
+              ? "oauth"
+              : "api_key"
+            : "none"
+        );
         return {
           id: providerId,
-          name: oauthProvider?.name ?? providerId,
-          hasAuth,
-          authType: auth?.type ?? "none",
-          authSource: inferProviderAuthSource(auth, providerAuthStatus, apiKeySetupSupported),
-          oauthSupported: Boolean(oauthProvider),
+          name: provider?.auth.oauth ? provider.name : providerId,
+          hasAuth: providerAuthStatus.configured,
+          authType,
+          authSource: inferProviderAuthSource(credential, providerAuthStatus, apiKeySetupSupported),
+          oauthSupported: Boolean(provider?.auth.oauth),
           apiKeySetupSupported,
         };
       });
   }
 
   private async buildModelRecords(): Promise<readonly RuntimeModelRecord[]> {
-    this.modelRegistry.refresh();
+    const modelRuntime = await this.modelRuntime;
+    await modelRuntime.refresh();
     const availableKeys = new Set(
-      (await this.modelRegistry.getAvailable()).map((model) => `${model.provider}:${model.id}`),
+      (await modelRuntime.getAvailable()).map((model) => `${model.provider}:${model.id}`),
     );
     const providers = new Map((await this.buildProviderRecords()).map((provider) => [provider.id, provider]));
 
-    return this.modelRegistry
-      .getAll()
+    return modelRuntime
+      .getModels()
       .map<RuntimeModelRecord>((model) => {
         const provider = providers.get(model.provider);
         return {
@@ -906,46 +926,59 @@ function providerSupportsDesktopApiKeySetup(providerId: string): boolean {
   return DESKTOP_API_KEY_PROVIDER_IDS.has(providerId);
 }
 
-type PiOAuthLoginCallbacks = Parameters<AuthStorage["login"]>[1];
+type PiAuthInteraction = Parameters<ModelRuntime["login"]>[2];
 
-function toPiOAuthLoginCallbacks(callbacks: RuntimeLoginCallbacks): PiOAuthLoginCallbacks {
+function toPiAuthInteraction(callbacks: RuntimeLoginCallbacks): PiAuthInteraction {
   return {
-    onAuth: callbacks.onAuth,
-    onDeviceCode: (info) =>
-      callbacks.onAuth({
-        url: info.verificationUri,
-        instructions: [
-          `Enter code: ${info.userCode}`,
-          info.expiresInSeconds ? `Expires in ${info.expiresInSeconds} seconds.` : undefined,
-        ].filter((line): line is string => Boolean(line)).join("\n"),
-      }),
-    onPrompt: callbacks.onPrompt,
-    onSelect: async (prompt) => {
-      const defaultOption = prompt.options[0];
-      const choice = await callbacks.onPrompt({
-        message: `${prompt.message}\n${prompt.options.map((option, index) => `${index + 1}. ${option.label}`).join("\n")}`,
-        allowEmpty: true,
-        ...(defaultOption ? { placeholder: defaultOption.label } : {}),
-      });
-      const normalizedChoice = choice.trim();
-      if (!normalizedChoice) {
-        return defaultOption?.id;
-      }
-      const selectedIndex = Number.parseInt(normalizedChoice, 10);
-      if (Number.isInteger(selectedIndex) && selectedIndex >= 1 && selectedIndex <= prompt.options.length) {
-        return prompt.options[selectedIndex - 1]?.id;
-      }
-      return prompt.options.find((option) => option.id === normalizedChoice || option.label === normalizedChoice)?.id;
-    },
-    ...(callbacks.onProgress ? { onProgress: callbacks.onProgress } : {}),
-    ...(callbacks.onManualCodeInput ? { onManualCodeInput: callbacks.onManualCodeInput } : {}),
     ...(callbacks.signal ? { signal: callbacks.signal } : {}),
+    async prompt(prompt) {
+      if (prompt.type === "manual_code" && callbacks.onManualCodeInput) {
+        return callbacks.onManualCodeInput();
+      }
+      if (prompt.type === "select") {
+        const defaultOption = prompt.options[0];
+        const choice = await callbacks.onPrompt({
+          message: `${prompt.message}\n${prompt.options.map((option, index) => `${index + 1}. ${option.label}`).join("\n")}`,
+          allowEmpty: true,
+          ...(defaultOption ? { placeholder: defaultOption.label } : {}),
+        });
+        const normalizedChoice = choice.trim();
+        if (!normalizedChoice) {
+          return defaultOption?.id ?? "";
+        }
+        const selectedIndex = Number.parseInt(normalizedChoice, 10);
+        if (Number.isInteger(selectedIndex) && selectedIndex >= 1 && selectedIndex <= prompt.options.length) {
+          return prompt.options[selectedIndex - 1]?.id ?? "";
+        }
+        return prompt.options.find((option) => option.id === normalizedChoice || option.label === normalizedChoice)?.id
+          ?? normalizedChoice;
+      }
+      return callbacks.onPrompt({
+        message: prompt.message,
+        ...(prompt.placeholder ? { placeholder: prompt.placeholder } : {}),
+      });
+    },
+    notify(event) {
+      if (event.type === "auth_url") {
+        void callbacks.onAuth({ url: event.url, ...(event.instructions ? { instructions: event.instructions } : {}) });
+      } else if (event.type === "device_code") {
+        void callbacks.onAuth({
+          url: event.verificationUri,
+          instructions: [
+            `Enter code: ${event.userCode}`,
+            event.expiresInSeconds ? `Expires in ${event.expiresInSeconds} seconds.` : undefined,
+          ].filter((line): line is string => Boolean(line)).join("\n"),
+        });
+      } else if (callbacks.onProgress) {
+        void callbacks.onProgress(event.message);
+      }
+    },
   };
 }
 
 function inferProviderAuthSource(
   auth: { readonly type: "oauth" | "api_key" } | undefined,
-  providerAuthStatus: AuthStatus,
+  providerAuthStatus: ReturnType<ModelRuntime["getProviderAuthStatus"]>,
   apiKeySetupSupported: boolean,
 ): "none" | "oauth" | "auth_file" | "env" | "external" {
   if (auth?.type === "oauth") {

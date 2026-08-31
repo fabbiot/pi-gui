@@ -116,6 +116,9 @@ export function ComposerPanel({
 }: ComposerPanelProps) {
   const hasComposerInput = composerDraft.trim().length > 0 || attachments.length > 0;
   const primaryActionIsStop = selectedSession.status === "running" && !hasComposerInput;
+  const condenseAuto = runtime?.extensions.some(
+    (extension) => extension.enabled && extension.commands.includes("condense"),
+  ) ?? false;
 
   return (
     <footer className="composer">
@@ -181,6 +184,15 @@ export function ComposerPanel({
                     onSetModel={onSetModel}
                     onSetThinking={onSetThinking}
                   />
+                  {selectedSession.contextUsage ? (
+                    <>
+                      {" · "}
+                      <ContextUsageIndicator
+                        usage={selectedSession.contextUsage}
+                        condenseAuto={condenseAuto}
+                      />
+                    </>
+                  ) : null}
                 </div>
                 <div className="composer__actions">
                   <button
@@ -211,5 +223,39 @@ export function ComposerPanel({
         />
       </div>
     </footer>
+  );
+}
+
+function formatContextTokens(count: number): string {
+  if (count < 1_000) return String(count);
+  if (count < 10_000) return `${(count / 1_000).toFixed(1)}k`;
+  if (count < 1_000_000) return `${Math.round(count / 1_000)}k`;
+  return `${(count / 1_000_000).toFixed(count < 10_000_000 ? 1 : 0)}M`;
+}
+
+function ContextUsageIndicator({
+  usage,
+  condenseAuto,
+}: {
+  readonly usage: NonNullable<SessionRecord["contextUsage"]>;
+  readonly condenseAuto: boolean;
+}) {
+  const level = usage.percent !== null && usage.percent > 90
+    ? "danger"
+    : usage.percent !== null && usage.percent > 70
+      ? "warning"
+      : "normal";
+  const percent = usage.percent === null ? "?" : `${usage.percent.toFixed(1)}%`;
+  const tokens = usage.tokens === null ? "?" : formatContextTokens(usage.tokens);
+  const label = `Context ${percent} · ${tokens}/${formatContextTokens(usage.contextWindow)}`;
+  return (
+    <span
+      className={`composer__context composer__context--${level}`}
+      data-testid="context-usage"
+      title={`${label}${condenseAuto ? " · automatic Condense enabled" : ""}`}
+    >
+      {label}
+      {condenseAuto ? " · Condense auto" : ""}
+    </span>
   );
 }

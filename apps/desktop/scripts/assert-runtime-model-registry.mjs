@@ -1,7 +1,7 @@
-import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
-const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
-const models = registry.getAll();
+const runtime = await ModelRuntime.create({ modelsPath: null });
+const models = runtime.getModels();
 const modelChecks = [
   ...["luna", "sol", "terra"].map((variant) => ({
     provider: "openai-codex",
@@ -10,6 +10,7 @@ const modelChecks = [
     requireReasoning: true,
     requireImageInput: true,
     requireMaxThinking: true,
+    expectedContextWindow: 272_000,
   })),
   {
     provider: "anthropic",
@@ -20,8 +21,8 @@ const modelChecks = [
   },
   {
     provider: "zai",
-    id: "glm-5.1",
-    reason: "issue #12 GLM 5.1 visibility",
+    id: "glm-5.3",
+    reason: "issue #12 GLM 5.3 visibility",
     requireReasoning: true,
     requireImageInput: false,
   },
@@ -41,6 +42,11 @@ for (const check of modelChecks) {
   }
   if (check.requireMaxThinking && model.thinkingLevelMap?.max !== "max") {
     throw new Error(`Bundled ${modelKey} is missing max thinking support for ${check.reason}.`);
+  }
+  if (check.expectedContextWindow && model.contextWindow !== check.expectedContextWindow) {
+    throw new Error(
+      `Bundled ${modelKey} reports ${model.contextWindow} context tokens; expected ${check.expectedContextWindow}.`,
+    );
   }
 }
 

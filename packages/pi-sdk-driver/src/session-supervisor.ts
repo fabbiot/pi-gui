@@ -1,7 +1,7 @@
 import { access, realpath, stat, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
-  ModelRegistry,
+  type ModelRuntime,
   SessionManager,
   type AgentSessionRuntime,
   type AgentSession,
@@ -104,7 +104,7 @@ export interface PiSdkDriverOptions {
   /** Existing owner for catalog state. Takes precedence over catalogFilePath when provided. */
   readonly catalogStorage?: SessionFileCatalogStorage;
   readonly createAgentSessionRuntimeImpl?: (options?: CreateAgentSessionOptions) => Promise<AgentSessionRuntime>;
-  readonly modelRegistry?: ModelRegistry;
+  readonly modelRuntime?: ModelRuntime | Promise<ModelRuntime>;
   readonly extensionFactories?: readonly ExtensionFactory[];
   readonly generateThreadTitleOverride?: (
     workspace: WorkspaceRef,
@@ -179,7 +179,7 @@ interface SkillAdapter {
 export class SessionSupervisor {
   private readonly catalogs: SessionFileCatalogStorage;
   private readonly createAgentSessionRuntimeImpl: (options?: CreateAgentSessionOptions) => Promise<AgentSessionRuntime>;
-  private readonly modelRegistry: ModelRegistry | undefined;
+  private readonly modelRuntime: Promise<ModelRuntime> | undefined;
   private readonly records = new Map<string, ManagedSessionRecord>();
   private readonly ensureRecordInFlight = new Map<string, Promise<ManagedSessionRecord>>();
   private readonly leaseIdentity: LeaseIdentity = currentLeaseIdentity();
@@ -202,7 +202,7 @@ export class SessionSupervisor {
             ...(options.extensionFactories ? { extensionFactories: [...options.extensionFactories] } : {}),
           },
         }));
-    this.modelRegistry = options.modelRegistry;
+    this.modelRuntime = options.modelRuntime ? Promise.resolve(options.modelRuntime) : undefined;
   }
 
   listWorkspaces(): Promise<WorkspaceCatalogSnapshot> {
@@ -452,13 +452,14 @@ export class SessionSupervisor {
   async createSession(workspace: WorkspaceRef, options?: CreateSessionOptions): Promise<SessionSnapshot> {
     await this.touchWorkspace(workspace);
 
+    const modelRuntime = await this.modelRuntime;
     const initialModel = options?.initialModel
-      ? this.resolveModel(options.initialModel.provider, options.initialModel.modelId)
+      ? await this.resolveModel(options.initialModel.provider, options.initialModel.modelId)
       : undefined;
     const createOptions: CreateAgentSessionOptions = {
       cwd: workspace.path,
       sessionManager: SessionManager.create(workspace.path),
-      ...(this.modelRegistry ? { modelRegistry: this.modelRegistry } : {}),
+      ...(modelRuntime ? { modelRuntime } : {}),
     };
     if (initialModel) {
       createOptions.model = initialModel;
@@ -569,15 +570,16 @@ export class SessionSupervisor {
       branchedManager = forked;
     }
 
+    const modelRuntime = await this.modelRuntime;
     const createOptions: CreateAgentSessionOptions = {
       cwd: targetWorkspace.path,
       sessionManager: branchedManager,
-      ...(this.modelRegistry ? { modelRegistry: this.modelRegistry } : {}),
+      ...(modelRuntime ? { modelRuntime } : {}),
     };
     const forkConfig = deriveSessionConfig(branchedManager);
     if (forkConfig?.provider && forkConfig?.modelId) {
       try {
-        createOptions.model = this.resolveModel(forkConfig.provider, forkConfig.modelId);
+        createOptions.model = await this.resolveModel(forkConfig.provider, forkConfig.modelId);
       } catch {
         // Forked model is no longer available; fall back to the runtime default.
       }
@@ -805,10 +807,10 @@ export class SessionSupervisor {
       throw new Error(`Session ${sessionKey(record.ref)} is not active.`);
     }
 
-    const model = this.resolveModel(selection.provider, selection.modelId);
-    const auth = await session.modelRegistry.getApiKeyAndHeaders(model);
-    if (!auth.ok) {
-      throw new Error(auth.error);
+    const model = await this.resolveModel(selection.provider, selection.modelId);
+    const auth = await session.modelRuntime.checkAuth(model.provider);
+    if (!auth) {
+      throw new Error(`No authentication configured for ${model.provider}/${model.id}.`);
     }
 
     const previousModel = session.model;
@@ -1001,10 +1003,11 @@ export class SessionSupervisor {
     // conversation. Absent/dead/own leases never block (fully advisory).
     await this.assertSessionNotForeignLeased(sessionFile);
 
+    const modelRuntime = await this.modelRuntime;
     const runtime = await this.createAgentSessionRuntimeImpl({
       cwd: workspace.path,
       sessionManager: SessionManager.open(sessionFile),
-      ...(this.modelRegistry ? { modelRegistry: this.modelRegistry } : {}),
+      ...(modelRuntime ? { modelRuntime } : {}),
     });
     const session = runtime.session;
 
@@ -1509,8 +1512,9 @@ export class SessionSupervisor {
     await session.followUp(text, images ? [...images] : undefined);
   }
 
-  private resolveModel(provider: string, modelId: string) {
-    const model = this.modelRegistry?.find(provider, modelId);
+  private async resolveModel(provider: string, modelId: string) {
+    const modelRuntime = await this.modelRuntime;
+    const model = modelRuntime?.getModel(provider, modelId);
     if (!model) {
       throw new Error(`Unknown model ${provider}:${modelId}`);
     }
@@ -1530,7 +1534,7 @@ export class SessionSupervisor {
 
   private async emitModelSelection(
     session: AgentSession,
-    model: ReturnType<SessionSupervisor["resolveModel"]>,
+    model: Awaited<ReturnType<SessionSupervisor["resolveModel"]>>,
     previousModel: AgentSession["model"],
   ): Promise<void> {
     const emitModelSelect = (session as unknown as {

@@ -887,6 +887,20 @@
   font-size: 12px;
 }
 
+.composer__context {
+  white-space: nowrap;
+}
+
+.composer__context--warning {
+  color: var(--warning-ink);
+  font-weight: 600;
+}
+
+.composer__context--danger {
+  color: var(--error);
+  font-weight: 700;
+}
+
 .model-onboarding-notice {
   display: flex;
   align-items: center;

@@ -23,6 +23,7 @@ import type {
   CreateSessionOptions,
   HostUiResponse,
   SessionConfig,
+  SessionContextUsage,
   SessionDriverEvent,
   SessionQueuedMessage,
   SessionRef,
@@ -1354,6 +1355,7 @@ export class DesktopAppStore implements AppStoreInternals {
         this.sessionState.transcriptCache,
         this.sessionState.runningSinceBySession,
         this.sessionState.sessionConfigBySession,
+        this.sessionState.contextUsageBySession,
         this.sessionState.lastViewedAtBySession,
         this.sessionState.pinnedAtBySession,
       );
@@ -1511,6 +1513,7 @@ export class DesktopAppStore implements AppStoreInternals {
     if (!this.sessionState.sessionSubscriptions.has(sessionKey(sessionRef))) {
       snapshot = await this.driver.openSession(sessionRef);
       this.updateSessionConfig(sessionRef, snapshot.config);
+      this.updateSessionContextUsage(sessionRef, snapshot.contextUsage);
     }
     await this.ensureSessionSubscribed(sessionRef);
     await this.refreshSessionCommands(sessionRef);
@@ -1521,6 +1524,7 @@ export class DesktopAppStore implements AppStoreInternals {
     if (!this.sessionState.sessionSubscriptions.has(sessionKey(sessionRef))) {
       const snapshot = await this.driver.openSession(sessionRef);
       this.updateSessionConfig(sessionRef, snapshot.config);
+      this.updateSessionContextUsage(sessionRef, snapshot.contextUsage);
       this.updateQueuedComposerMessages(sessionRef, snapshot.queuedMessages);
     }
     await this.ensureSessionSubscribed(sessionRef);
@@ -2239,11 +2243,13 @@ export class DesktopAppStore implements AppStoreInternals {
         case "sessionOpened":
         case "runCompleted":
           this.updateSessionConfig(event.sessionRef, event.snapshot.config);
+          this.updateSessionContextUsage(event.sessionRef, event.snapshot.contextUsage);
           this.updateQueuedComposerMessages(event.sessionRef, event.snapshot.queuedMessages);
           await this.refreshSessionCommands(event.sessionRef);
           break;
         case "sessionUpdated":
           this.updateSessionConfig(event.sessionRef, event.snapshot.config);
+          this.updateSessionContextUsage(event.sessionRef, event.snapshot.contextUsage);
           this.updateQueuedComposerMessages(event.sessionRef, event.snapshot.queuedMessages);
           if (event.snapshot.status !== "running") {
             this.refreshSessionCommandsCoalesced(event.sessionRef);
@@ -3123,6 +3129,15 @@ export class DesktopAppStore implements AppStoreInternals {
       this.sessionState.sessionConfigBySession.set(key, config);
     } else {
       this.sessionState.sessionConfigBySession.delete(key);
+    }
+  }
+
+  updateSessionContextUsage(sessionRef: SessionRef, contextUsage: SessionContextUsage | undefined): void {
+    const key = sessionKey(sessionRef);
+    if (contextUsage) {
+      this.sessionState.contextUsageBySession.set(key, contextUsage);
+    } else {
+      this.sessionState.contextUsageBySession.delete(key);
     }
   }
 

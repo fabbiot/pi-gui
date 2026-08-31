@@ -182,6 +182,7 @@ function createTestExtensionContext(sessionRef: SessionRef): ExtensionContext {
     ui: {} as ExtensionContext["ui"],
     modelRegistry: {} as ExtensionContext["modelRegistry"],
     model: undefined,
+    scopedModels: [],
     signal: undefined,
     isIdle: () => true,
     isProjectTrusted: () => true,

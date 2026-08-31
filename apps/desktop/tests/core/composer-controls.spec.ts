@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   createNamedThread,
   desktopShortcut,
+  emitTestSessionEvent,
   getDesktopState,
   launchDesktop,
   makeUserDataDir,
@@ -48,6 +49,89 @@ Inspect the current application state.
     "utf8",
   );
 }
+
+test("shows live context usage and automatic Condense status in the composer footer", async () => {
+  const userDataDir = await makeUserDataDir();
+  const agentDir = join(userDataDir, "agent");
+  const workspacePath = await makeWorkspace("context-usage-workspace");
+  await seedAgentDir(agentDir);
+  const extensionsDir = join(agentDir, "extensions");
+  await mkdir(extensionsDir, { recursive: true });
+  await writeFile(
+    join(extensionsDir, "condense.ts"),
+    `export default function (pi) {
+  pi.registerCommand("condense", {
+    description: "Condense selected tool results",
+    handler: async () => {},
+  });
+}\n`,
+    "utf8",
+  );
+  const harness = await launchDesktop(userDataDir, {
+    agentDir,
+    initialWorkspaces: [workspacePath],
+    testMode: "background",
+  });
+
+  try {
+    const window = await harness.firstWindow();
+    await createNamedThread(window, "Context usage session");
+    const state = await getDesktopState(window);
+    const workspace = state.workspaces.find((candidate) => candidate.id === state.selectedWorkspaceId);
+    expect(workspace).toBeTruthy();
+    expect(state.selectedSessionId).toBeTruthy();
+    const sessionRef = {
+      workspaceId: state.selectedWorkspaceId,
+      sessionId: state.selectedSessionId,
+    };
+    const timestamp = "2026-08-30T22:50:00.000Z";
+
+    await emitTestSessionEvent(harness, {
+      type: "sessionUpdated",
+      sessionRef,
+      timestamp,
+      snapshot: {
+        ref: sessionRef,
+        workspace: {
+          workspaceId: workspace!.id,
+          path: workspace!.path,
+          displayName: workspace!.name,
+        },
+        title: "Context usage session",
+        status: "idle",
+        updatedAt: timestamp,
+        contextUsage: { tokens: 96_000, contextWindow: 128_000, percent: 75 },
+      },
+    });
+
+    const indicator = window.getByTestId("context-usage");
+    await expect(indicator).toHaveText("Context 75.0% · 96k/128k · Condense auto");
+    await expect(indicator).toHaveClass(/composer__context--warning/);
+
+    await emitTestSessionEvent(harness, {
+      type: "sessionUpdated",
+      sessionRef,
+      timestamp,
+      snapshot: {
+        ref: sessionRef,
+        workspace: {
+          workspaceId: workspace!.id,
+          path: workspace!.path,
+          displayName: workspace!.name,
+        },
+        title: "Context usage session",
+        status: "idle",
+        updatedAt: timestamp,
+        contextUsage: { tokens: 118_000, contextWindow: 128_000, percent: 92.1875 },
+      },
+    });
+
+    await expect(indicator).toHaveText("Context 92.2% · 118k/128k · Condense auto");
+    await expect(indicator).toHaveClass(/composer__context--danger/);
+  } finally {
+    await harness.close();
+  }
+});
 
 test("supports keyboard shortcuts, slash menus, and topbar controls through the user surface", async () => {
   test.setTimeout(60_000);
