@@ -1144,6 +1144,14 @@ app.whenReady().then(async () => {
   ipcMain.handle(desktopIpc.selectedTranscriptRequest, (event) =>
     store.getSelectedTranscriptForView(viewForWebContents(event.sender.id)),
   );
+  ipcMain.handle(desktopIpc.sessionTranscriptRequest, (event, target: WorkspaceSessionTarget) =>
+    store.getSelectedTranscriptForView({
+      ...viewForWebContents(event.sender.id),
+      selectedWorkspaceId: target.workspaceId,
+      selectedSessionId: target.sessionId,
+      activeView: "threads",
+    }),
+  );
   ipcMain.handle(desktopIpc.addWorkspacePath, (event, workspacePath: string) =>
     runWindowScopedForEvent(event, () => store.addWorkspace(workspacePath)),
   );
@@ -1328,6 +1336,30 @@ app.whenReady().then(async () => {
   ipcMain.handle(desktopIpc.startThread, (event, input: StartThreadInput) =>
     runWindowScopedForEvent(event, () => store.startThread(input)),
   );
+  ipcMain.handle(desktopIpc.startThreadInNewWindow, (event, input: StartThreadInput) => {
+    const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+    const sourceView = viewForWebContents(event.sender.id);
+    return runWindowScopedStateResult(sourceWindow, async () => {
+      const startedState = await store.startThread(input);
+      if (startedState.lastError) {
+        throw new Error(startedState.lastError);
+      }
+      const target: WorkspaceSessionTarget = {
+        workspaceId: startedState.selectedWorkspaceId,
+        sessionId: startedState.selectedSessionId,
+      };
+      if (!target.workspaceId || !target.sessionId) {
+        throw new Error("Pi did not create a thread for the new window.");
+      }
+      createAppWindow({
+        selectedWorkspaceId: target.workspaceId,
+        selectedSessionId: target.sessionId,
+        activeView: "threads",
+      });
+      restoreStoreToViewAndEmit(sourceView);
+      return { state: store.state, target };
+    });
+  });
   ipcMain.handle(desktopIpc.forkThread, (event, input: ForkThreadInput) =>
     runWindowScopedForEvent(event, () => store.forkThread(input)),
   );

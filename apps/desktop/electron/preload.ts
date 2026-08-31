@@ -37,6 +37,7 @@ import type {
   SendChildThreadFollowUpInput,
   SetChildSupervisionLoopInput,
   SelectedTranscriptRecord,
+  StartThreadInNewWindowResult,
   StartThreadInput,
   ThemePresetId,
   WorkspaceSessionTarget,
@@ -84,6 +85,8 @@ contextBridge.exposeInMainWorld("piApp", {
   },
   getSelectedTranscript: () =>
     ipcRenderer.invoke(desktopIpc.selectedTranscriptRequest) as Promise<SelectedTranscriptRecord | null>,
+  getSessionTranscript: (target: WorkspaceSessionTarget) =>
+    ipcRenderer.invoke(desktopIpc.sessionTranscriptRequest, target) as Promise<SelectedTranscriptRecord | null>,
   onSelectedTranscriptChanged: (listener: (payload: SelectedTranscriptRecord | null) => void) => {
     const handle = (_event: Electron.IpcRendererEvent, payload: SelectedTranscriptRecord | null) => {
       listener(payload);
@@ -162,6 +165,8 @@ contextBridge.exposeInMainWorld("piApp", {
     ipcRenderer.invoke(desktopIpc.createSession, input) as Promise<DesktopAppState>,
   startThread: (input: StartThreadInput) =>
     ipcRenderer.invoke(desktopIpc.startThread, input) as Promise<DesktopAppState>,
+  startThreadInNewWindow: (input: StartThreadInput) =>
+    ipcRenderer.invoke(desktopIpc.startThreadInNewWindow, input) as Promise<StartThreadInNewWindowResult>,
   forkThread: (input: ForkThreadInput) =>
     ipcRenderer.invoke(desktopIpc.forkThread, input) as Promise<DesktopAppState>,
   sendChildThreadFollowUp: (input: SendChildThreadFollowUpInput) =>

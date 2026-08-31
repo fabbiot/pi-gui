@@ -262,6 +262,7 @@ export async function submitComposer(
   options: {
     readonly deliverAs?: "steer" | "followUp";
     readonly allowCommands?: boolean;
+    readonly rollbackOptimisticMessageOnError?: boolean;
   } = {},
 ): Promise<DesktopAppState> {
   await store.initialize();
@@ -288,6 +289,7 @@ export async function submitComposerToSession(
   options: {
     readonly deliverAs?: "steer" | "followUp";
     readonly allowCommands?: boolean;
+    readonly rollbackOptimisticMessageOnError?: boolean;
   } = {},
 ): Promise<DesktopAppState> {
   const text = textInput.trim();
@@ -374,7 +376,9 @@ export async function submitComposerToSession(
       });
     }
 
-    await sendMessageToSession(store, sessionRef, text, attachments);
+    await sendMessageToSession(store, sessionRef, text, attachments, {
+      rollbackOptimisticMessageOnError: options.rollbackOptimisticMessageOnError,
+    });
     const runtimeCommandOutcome = resolvedRuntimeSlashCommand
       ? store.finishRuntimeCommandExecution(sessionRef)
       : undefined;

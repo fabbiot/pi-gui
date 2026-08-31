@@ -26,6 +26,7 @@ import { deriveModelOnboardingState } from "./model-onboarding";
 import type { SettingsSection } from "./settings-view";
 import { SecondarySurfaces } from "./app/secondary-surfaces";
 import { NewThreadView } from "./new-thread-view";
+import { PlanControlView } from "./plan-control";
 import { buildThreadGroups } from "./thread-groups";
 import { Sidebar } from "./sidebar";
 import { SidebarToggleButton } from "./sidebar-toggle-button";
@@ -831,7 +832,23 @@ export default function App() {
           terminalPanel
         ) : (
           <>
-        {snapshot.activeView === "new-thread" ? (
+        {snapshot.activeView === "plan-control" ? (
+          rootWorkspaceOptions.length > 0 ? (
+            <PlanControlView
+              api={api}
+              snapshot={snapshot}
+              workspaces={rootWorkspaceOptions}
+            />
+          ) : (
+            <section className="canvas canvas--empty">
+              <div className="empty-panel">
+                <div className="session-header__eyebrow">Workspace</div>
+                <h1>Open a folder to plan work</h1>
+                <p>Add a project folder before dispatching isolated Pi sessions.</p>
+              </div>
+            </section>
+          )
+        ) : snapshot.activeView === "new-thread" ? (
           rootWorkspaceOptions.length > 0 ? (
             <NewThreadView
               workspaces={rootWorkspaceOptions}

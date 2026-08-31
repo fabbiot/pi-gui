@@ -11,7 +11,7 @@ import type {
   RemoveWorktreeInput,
   StartThreadInput,
 } from "../src/desktop-state";
-import { sendMessageToSession } from "./app-store-composer";
+import { submitComposerToSession } from "./app-store-composer";
 import type { CreateWorktreeOptions } from "./worktree-manager";
 import type { AppStoreInternals } from "./app-store-internals";
 import { NEW_THREAD_PLACEHOLDER_TITLE } from "./thread-title-constants";
@@ -163,7 +163,8 @@ export async function startThread(store: AppStoreInternals, input: StartThreadIn
     // Fire message in background — assistantDelta events flow through
     // handleSessionEvent → emit() and update React while on the thread view
     if (prompt || attachments.length > 0) {
-      void sendMessageToSession(store, session.ref, prompt, attachments, {
+      void submitComposerToSession(store, session.ref, prompt, attachments, {
+        allowCommands: true,
         rollbackOptimisticMessageOnError: false,
       }).catch((error) => {
         void store.withError(error);

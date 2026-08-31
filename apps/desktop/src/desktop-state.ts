@@ -6,7 +6,7 @@ export type SessionStatus = "idle" | "running" | "failed";
 export type { SessionRole, TimelineToolCall, TranscriptMessage } from "./timeline-types";
 import type { TranscriptMessage } from "./timeline-types";
 
-export type AppView = "threads" | "new-thread" | "skills" | "extensions" | "settings";
+export type AppView = "threads" | "new-thread" | "plan-control" | "skills" | "extensions" | "settings";
 export type WorkspaceKind = "primary" | "worktree";
 export type WorktreeStatus = "ready" | "missing" | "error";
 export type NewThreadEnvironment = "local" | "worktree";
@@ -336,6 +336,11 @@ export interface CreateSessionInput {
 export interface WorkspaceSessionTarget {
   readonly workspaceId: string;
   readonly sessionId: string;
+}
+
+export interface StartThreadInNewWindowResult {
+  readonly state: DesktopAppState;
+  readonly target: WorkspaceSessionTarget;
 }
 
 export function createEmptyDesktopAppState(): DesktopAppState {

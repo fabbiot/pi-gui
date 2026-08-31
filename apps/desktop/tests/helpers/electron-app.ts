@@ -1,6 +1,8 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { copyFile, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { createRequire } from "node:module";
+import type { AddressInfo } from "node:net";
 import { basename, delimiter, dirname, extname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
@@ -79,6 +81,53 @@ export interface SeedAgentDirOptions {
   readonly withOpenAiAuth?: boolean;
   readonly withDefaultModel?: boolean;
   readonly enabledModels?: readonly string[];
+}
+
+export interface HangingOpenAiServer {
+  readonly baseUrl: string;
+  readonly requestCount: () => number;
+  readonly close: () => Promise<void>;
+}
+
+/**
+ * Start an OpenAI-compatible endpoint that acknowledges connections but leaves
+ * model turns pending until the test supplies deterministic session events.
+ *
+ * @returns The endpoint URL, request counter, and asynchronous cleanup handle.
+ * @throws Error when the local TCP listener cannot start.
+ * @example
+ * const server = await startHangingOpenAiServer();
+ * try { expect(server.requestCount()).toBe(0); } finally { await server.close(); }
+ */
+export async function startHangingOpenAiServer(): Promise<HangingOpenAiServer> {
+  let requests = 0;
+  const sockets = new Set<import("node:net").Socket>();
+  const server = createServer((request) => {
+    requests += 1;
+    request.resume();
+  });
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address() as AddressInfo;
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    requestCount: () => requests,
+    close: async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    },
+  };
 }
 
 export interface RealAuthConfig {
