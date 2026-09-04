@@ -266,13 +266,6 @@ function NewThreadComposerFooter({
               >
                 <span>Local</span>
               </button>
-              <button
-                className={`new-thread__environment ${environment === "worktree" ? "new-thread__environment--active" : ""}`}
-                type="button"
-                onClick={() => onSelectEnvironment("worktree")}
-              >
-                <span>Worktree</span>
-              </button>
             </div>
             <span className="new-thread__hint-separator">·</span>
             <ModelSelector
